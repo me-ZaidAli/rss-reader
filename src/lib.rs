@@ -1,3 +1,4 @@
+use anyhow::{Context, Result};
 use chrono::{DateTime, NaiveDate};
 use clap::Parser;
 use rss::Channel;
@@ -27,7 +28,7 @@ pub struct Arguments {
     pub date: Option<NaiveDate>,
 }
 
-async fn read_feed_urls() -> Vec<String> {
+async fn read_feed_urls() -> Result<Vec<String>> {
     let mut urls: Vec<String> = vec![];
 
     let input = io::stdin();
@@ -36,38 +37,45 @@ async fn read_feed_urls() -> Vec<String> {
 
     let _ = lines.next_line().await;
 
-    while let Some(line) = lines.next_line().await.expect("failed to read input") {
-        let url = line.split(',').nth(0).unwrap();
-
-        urls.push(url.to_string())
+    while let Some(line) = lines.next_line().await? {
+        if let Some(url) = line.split(',').nth(0) {
+            urls.push(url.to_string());
+        }
     }
 
-    urls
+    Ok(urls)
 }
 
-async fn fetch_feed(feed_url: &str) -> Channel {
-    let content = reqwest::get(feed_url).await.unwrap().bytes().await.unwrap();
+async fn fetch_feed(feed_url: &str) -> Result<Channel> {
+    let request_data = reqwest::get(feed_url)
+        .await
+        .context("Couldn't fetch the feed")?;
 
-    Channel::read_from(&content[..]).unwrap()
+    let feed_content_bytes = request_data
+        .bytes()
+        .await
+        .context("Can't convert request data to bytes")?;
+
+    Ok(Channel::read_from(&feed_content_bytes[..]).context("Invalid feed content")?)
 }
 
-async fn transform(channel: Channel) -> FeedChannel {
-    FeedChannel {
+async fn transform(channel: Channel) -> Result<FeedChannel> {
+    Ok(FeedChannel {
         channel_name: channel.title,
         items: channel
             .items
             .into_iter()
             .filter(|item| item.pub_date.is_some() && item.title.is_some())
-            .map(|item| {
-                return FeedItem {
+            .map(|item| -> Result<FeedItem> {
+                Ok(FeedItem {
                     title: item.title.unwrap(),
                     pub_date: DateTime::parse_from_rfc2822(&item.pub_date.unwrap())
-                        .unwrap()
+                        .context("Date format isn't rfc2822 ")?
                         .date_naive(),
-                };
+                })
             })
-            .collect::<Vec<FeedItem>>(),
-    }
+            .collect::<Result<Vec<FeedItem>>>()?,
+    })
 }
 
 async fn filter_with(date: &NaiveDate, feed_to_filer: FeedChannel) -> FeedChannel {
@@ -86,11 +94,11 @@ async fn filter_with(date: &NaiveDate, feed_to_filer: FeedChannel) -> FeedChanne
     };
 }
 
-pub async fn run(args: &Arguments) {
+pub async fn run(args: &Arguments) -> Result<()> {
     let date = args.date;
     let arc_date = Arc::new(date);
 
-    let feed_urls = read_feed_urls().await;
+    let feed_urls = read_feed_urls().await?;
 
     let mut set: JoinSet<FeedChannel> = JoinSet::new();
 
@@ -98,25 +106,24 @@ pub async fn run(args: &Arguments) {
         let cloned_date = arc_date.clone();
 
         set.spawn(async move {
-            let channel = fetch_feed(&url).await;
-            let tranformed_channel = transform(channel).await;
+            let channel = fetch_feed(&url).await.unwrap();
+
+            let transformed_channel = transform(channel).await.unwrap();
 
             if cloned_date.is_some() {
-                return filter_with(&cloned_date.unwrap(), tranformed_channel).await;
+                return filter_with(&cloned_date.unwrap(), transformed_channel).await;
             }
 
-            tranformed_channel
+            transformed_channel
         });
     }
 
     while let Some(task) = set.join_next().await {
         match task {
-            Ok(feed) => {
-                if feed.items.len() < 10 {
-                    println!("{:#?}", feed)
-                }
-            }
-            Err(e) => println!("{}", e),
+            Ok(feed) => println!("{:#?}", feed),
+            Err(e) => eprintln!("{}", e),
         }
     }
+
+    Ok(())
 }

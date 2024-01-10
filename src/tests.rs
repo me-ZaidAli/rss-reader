@@ -1,7 +1,7 @@
 #[cfg(test)]
 
 mod tests {
-    use crate::{fetch_feed, filter_with, transform, FeedItem, FeedChannel};
+    use crate::{fetch_feed, filter_with, transform, FeedChannel, FeedItem};
     use chrono::NaiveDate;
     use rss::{ChannelBuilder, Item};
 
@@ -91,17 +91,16 @@ mod tests {
             .items(feed_items)
             .build();
 
-        let actual = transform(channel).await;
+        let actual = transform(channel).await.unwrap();
 
         assert_eq!(expected, actual);
     }
 
     #[tokio::test]
-    #[should_panic(expected = "InvalidStartTag")]
     async fn fetch_feed_from_invalid_url() {
         let url = "https://www.google.com";
 
-        fetch_feed(url).await;
+        assert!(fetch_feed(url).await.is_err());
     }
 
     async fn mock_fetch_feeds() -> FeedChannel {
