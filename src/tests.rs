@@ -1,7 +1,7 @@
 #[cfg(test)]
 
 mod tests {
-    use crate::{fetch_feed, filter_with, transform, FeedChannel, FeedItem};
+    use crate::{fetch_rss_feed, filter_feed_items_with, transform, FeedChannel, FeedItem};
     use chrono::NaiveDate;
     use rss::{ChannelBuilder, Item};
 
@@ -14,7 +14,7 @@ mod tests {
 
         let feeds = mock_fetch_feeds().await;
 
-        let mut filtered_feed = filter_with(
+        let mut filtered_feed = filter_feed_items_with(
             &NaiveDate::from_ymd_opt(2020, 12, 30).unwrap(),
             feeds.clone(),
         )
@@ -24,7 +24,7 @@ mod tests {
 
         expected = vec![];
 
-        filtered_feed = filter_with(
+        filtered_feed = filter_feed_items_with(
             &NaiveDate::from_ymd_opt(2023, 12, 30).unwrap(),
             feeds.clone(),
         )
@@ -51,7 +51,7 @@ mod tests {
             },
         ];
 
-        filtered_feed = filter_with(
+        filtered_feed = filter_feed_items_with(
             &NaiveDate::from_ymd_opt(2010, 12, 30).unwrap(),
             feeds.clone(),
         )
@@ -91,7 +91,7 @@ mod tests {
             .items(feed_items)
             .build();
 
-        let actual = transform(channel).await.unwrap();
+        let actual = transform(channel).unwrap();
 
         assert_eq!(expected, actual);
     }
@@ -100,7 +100,7 @@ mod tests {
     async fn fetch_feed_from_invalid_url() {
         let url = "https://www.google.com";
 
-        assert!(fetch_feed(url).await.is_err());
+        assert!(fetch_rss_feed(url).await.is_err());
     }
 
     async fn mock_fetch_feeds() -> FeedChannel {

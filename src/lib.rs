@@ -2,7 +2,7 @@ use anyhow::{Context, Result};
 use chrono::{DateTime, NaiveDate};
 use clap::Parser;
 use rss::Channel;
-use std::{sync::Arc, vec};
+use std::vec;
 use tokio::{
     io::{self, AsyncBufReadExt},
     task::JoinSet,
@@ -46,7 +46,7 @@ async fn read_feed_urls() -> Result<Vec<String>> {
     Ok(urls)
 }
 
-async fn fetch_feed(feed_url: &str) -> Result<Channel> {
+async fn fetch_rss_feed(feed_url: &str) -> Result<Channel> {
     let request_data = reqwest::get(feed_url)
         .await
         .context("Couldn't fetch the feed")?;
@@ -59,27 +59,31 @@ async fn fetch_feed(feed_url: &str) -> Result<Channel> {
     Ok(Channel::read_from(&feed_content_bytes[..]).context("Invalid feed content")?)
 }
 
-async fn transform(channel: Channel) -> Result<FeedChannel> {
+fn transform(channel: Channel) -> Result<FeedChannel> {
+    let transformed_feed_items = channel
+        .items
+        .into_iter()
+        .filter(|item| item.pub_date.is_some() && item.title.is_some())
+        .map(|item| -> Result<FeedItem> {
+            let pub_date = DateTime::parse_from_rfc2822(&item.pub_date.unwrap())
+                .context("Date format isn't rfc2822 ")?
+                .date_naive();
+
+            Ok(FeedItem {
+                title: item.title.unwrap(),
+                pub_date,
+            })
+        })
+        .collect::<Result<Vec<FeedItem>>>()?;
+
     Ok(FeedChannel {
         channel_name: channel.title,
-        items: channel
-            .items
-            .into_iter()
-            .filter(|item| item.pub_date.is_some() && item.title.is_some())
-            .map(|item| -> Result<FeedItem> {
-                Ok(FeedItem {
-                    title: item.title.unwrap(),
-                    pub_date: DateTime::parse_from_rfc2822(&item.pub_date.unwrap())
-                        .context("Date format isn't rfc2822 ")?
-                        .date_naive(),
-                })
-            })
-            .collect::<Result<Vec<FeedItem>>>()?,
+        items: transformed_feed_items,
     })
 }
 
-async fn filter_with(date: &NaiveDate, feed_to_filer: FeedChannel) -> FeedChannel {
-    let items = feed_to_filer.items;
+async fn filter_feed_items_with(date: &NaiveDate, feed_to_filter: FeedChannel) -> FeedChannel {
+    let items: Vec<FeedItem> = feed_to_filter.items;
 
     let filtered_items = items
         .into_iter()
@@ -90,28 +94,25 @@ async fn filter_with(date: &NaiveDate, feed_to_filer: FeedChannel) -> FeedChanne
 
     return FeedChannel {
         items: filtered_items,
-        ..feed_to_filer
+        ..feed_to_filter
     };
 }
 
 pub async fn run(args: &Arguments) -> Result<()> {
     let date = args.date;
-    let arc_date = Arc::new(date);
 
     let feed_urls = read_feed_urls().await?;
 
     let mut set: JoinSet<FeedChannel> = JoinSet::new();
 
     for url in feed_urls {
-        let cloned_date = arc_date.clone();
-
         set.spawn(async move {
-            let channel = fetch_feed(&url).await.unwrap();
+            let channel = fetch_rss_feed(&url).await.unwrap();
 
-            let transformed_channel = transform(channel).await.unwrap();
+            let transformed_channel = transform(channel).unwrap();
 
-            if cloned_date.is_some() {
-                return filter_with(&cloned_date.unwrap(), transformed_channel).await;
+            if date.is_some() {
+                return filter_feed_items_with(&date.unwrap(), transformed_channel).await;
             }
 
             transformed_channel
