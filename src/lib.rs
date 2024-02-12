@@ -1,11 +1,12 @@
 use anyhow::{Context, Result};
 use chrono::{DateTime, NaiveDate};
 use clap::Parser;
-use rss::Channel;
-use std::vec;
+use rss::{Channel, Item};
+use std::{time::Duration, vec};
 use tokio::{
     io::{self, AsyncBufReadExt},
     task::JoinSet,
+    time::Instant,
 };
 
 mod tests;
@@ -19,6 +20,7 @@ struct FeedItem {
 #[derive(Debug, Clone, PartialEq)]
 struct FeedChannel {
     channel_name: String,
+    time_to_fetch: Duration,
     items: Vec<FeedItem>,
 }
 
@@ -46,39 +48,58 @@ async fn read_feed_urls() -> Result<Vec<String>> {
     Ok(urls)
 }
 
-async fn fetch_rss_feed(feed_url: &str) -> Result<Channel> {
+struct FetchRssFeedResponse {
+    channel: Channel,
+    time_to_fetch: Duration,
+}
+
+async fn fetch_rss_feed(feed_url: &str) -> Result<FetchRssFeedResponse> {
+    let now = Instant::now();
     let request_data = reqwest::get(feed_url)
         .await
-        .context("Couldn't fetch the feed")?;
+        .context("Couldn't fetch rss feed")?;
+
+    let latency = now.elapsed();
 
     let feed_content_bytes = request_data
         .bytes()
         .await
         .context("Can't convert request data to bytes")?;
 
-    Ok(Channel::read_from(&feed_content_bytes[..]).context("Invalid feed content")?)
+    Ok(FetchRssFeedResponse {
+        channel: Channel::read_from(&feed_content_bytes[..]).context("Invalid feed content")?,
+        time_to_fetch: latency,
+    })
 }
 
-fn transform(channel: Channel) -> Result<FeedChannel> {
+fn transform(
+    FetchRssFeedResponse {
+        channel,
+        time_to_fetch,
+    }: FetchRssFeedResponse,
+) -> Result<FeedChannel> {
+    let feed_transformer = |item: Item| -> Result<FeedItem> {
+        let pub_date = DateTime::parse_from_rfc2822(&item.pub_date.unwrap())
+            .context("Date format isn't rfc2822 ")?
+            .date_naive();
+
+        Ok(FeedItem {
+            title: item.title.unwrap(),
+            pub_date,
+        })
+    };
+
     let transformed_feed_items = channel
         .items
         .into_iter()
         .filter(|item| item.pub_date.is_some() && item.title.is_some())
-        .map(|item| -> Result<FeedItem> {
-            let pub_date = DateTime::parse_from_rfc2822(&item.pub_date.unwrap())
-                .context("Date format isn't rfc2822 ")?
-                .date_naive();
-
-            Ok(FeedItem {
-                title: item.title.unwrap(),
-                pub_date,
-            })
-        })
+        .map(|item| feed_transformer(item))
         .collect::<Result<Vec<FeedItem>>>()?;
 
     Ok(FeedChannel {
         channel_name: channel.title,
         items: transformed_feed_items,
+        time_to_fetch,
     })
 }
 
@@ -107,9 +128,9 @@ pub async fn run(args: &Arguments) -> Result<()> {
 
     for url in feed_urls {
         set.spawn(async move {
-            let channel = fetch_rss_feed(&url).await.unwrap();
+            let response = fetch_rss_feed(&url).await.unwrap();
 
-            let transformed_channel = transform(channel).unwrap();
+            let transformed_channel = transform(response).unwrap();
 
             if date.is_some() {
                 return filter_feed_items_with(&date.unwrap(), transformed_channel).await;

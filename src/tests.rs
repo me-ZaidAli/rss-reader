@@ -1,7 +1,12 @@
 #[cfg(test)]
 
 mod tests {
-    use crate::{fetch_rss_feed, filter_feed_items_with, transform, FeedChannel, FeedItem};
+    use std::time::Duration;
+
+    use crate::{
+        fetch_rss_feed, filter_feed_items_with, transform, FeedChannel, FeedItem,
+        FetchRssFeedResponse,
+    };
     use chrono::NaiveDate;
     use rss::{ChannelBuilder, Item};
 
@@ -64,6 +69,7 @@ mod tests {
     async fn successful_channel_transformation() {
         let expected = FeedChannel {
             channel_name: "dummy channel".to_string(),
+            time_to_fetch: Duration::new(2, 0),
             items: vec![
                 FeedItem {
                     title: String::from("1"),
@@ -91,7 +97,12 @@ mod tests {
             .items(feed_items)
             .build();
 
-        let actual = transform(channel).unwrap();
+        let channel_with_time = FetchRssFeedResponse {
+            channel,
+            time_to_fetch: Duration::new(2, 0),
+        };
+
+        let actual = transform(channel_with_time).unwrap();
 
         assert_eq!(expected, actual);
     }
@@ -125,6 +136,7 @@ mod tests {
 
         return FeedChannel {
             channel_name: String::from("mock channel"),
+            time_to_fetch: Duration::new(2, 0),
             items,
         };
     }
