@@ -1,6 +1,7 @@
 use anyhow::{Context, Result};
 use chrono::{DateTime, NaiveDate};
 use clap::Parser;
+use reqwest::Url;
 use rss::{Channel, Item};
 use std::{time::Duration, vec};
 use tokio::{
@@ -11,13 +12,13 @@ use tokio::{
 
 mod tests;
 
-#[derive(Debug, PartialEq, Clone)]
+#[derive(Debug, PartialEq)]
 struct FeedItem {
     title: String,
     pub_date: NaiveDate,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, PartialEq)]
 struct FeedChannel {
     channel_name: String,
     time_to_fetch: Duration,
@@ -30,8 +31,8 @@ pub struct Arguments {
     pub date: Option<NaiveDate>,
 }
 
-async fn read_feed_urls() -> Result<Vec<String>> {
-    let mut urls: Vec<String> = vec![];
+async fn read_feed_urls() -> Result<Vec<Url>> {
+    let mut urls: Vec<Url> = vec![];
 
     let input = io::stdin();
     let reader = io::BufReader::new(input);
@@ -41,23 +42,25 @@ async fn read_feed_urls() -> Result<Vec<String>> {
 
     while let Some(line) = lines.next_line().await? {
         if let Some(url) = line.split(',').nth(0) {
-            urls.push(url.to_string());
+            let parsed_url =
+                Url::parse(url).with_context(|| format!("Couldn't parse the url {}.", url))?;
+            urls.push(parsed_url);
         }
     }
 
     Ok(urls)
 }
 
-struct FetchRssFeedResponse {
+struct RssResponse {
     channel: Channel,
     time_to_fetch: Duration,
 }
 
-async fn fetch_rss_feed(feed_url: &str) -> Result<FetchRssFeedResponse> {
+async fn fetch_rss_feed(feed_url: &Url) -> Result<RssResponse> {
     let now = Instant::now();
-    let request_data = reqwest::get(feed_url)
+    let request_data = reqwest::get(feed_url.as_str())
         .await
-        .context("Couldn't fetch rss feed")?;
+        .with_context(|| format!("Couldn't fetch rss feed from {}", feed_url))?;
 
     let latency = now.elapsed();
 
@@ -66,21 +69,22 @@ async fn fetch_rss_feed(feed_url: &str) -> Result<FetchRssFeedResponse> {
         .await
         .context("Can't convert request data to bytes")?;
 
-    Ok(FetchRssFeedResponse {
-        channel: Channel::read_from(&feed_content_bytes[..]).context("Invalid feed content")?,
+    Ok(RssResponse {
+        channel: Channel::read_from(&feed_content_bytes[..])
+            .with_context(|| format!("Invalid feed content from {}", feed_url))?,
         time_to_fetch: latency,
     })
 }
 
-fn transform(
-    FetchRssFeedResponse {
+fn transform_feed_channel(
+    RssResponse {
         channel,
         time_to_fetch,
-    }: FetchRssFeedResponse,
+    }: RssResponse,
 ) -> Result<FeedChannel> {
     let feed_transformer = |item: Item| -> Result<FeedItem> {
         let pub_date = DateTime::parse_from_rfc2822(&item.pub_date.unwrap())
-            .context("Date format isn't rfc2822 ")?
+            .context("Couldn't parse feed's published date. Rfc2822 date format needed.")?
             .date_naive();
 
         Ok(FeedItem {
@@ -124,25 +128,26 @@ pub async fn run(args: &Arguments) -> Result<()> {
 
     let feed_urls = read_feed_urls().await?;
 
-    let mut set: JoinSet<FeedChannel> = JoinSet::new();
+    let mut set: JoinSet<RssResponse> = JoinSet::new();
 
     for url in feed_urls {
-        set.spawn(async move {
-            let response = fetch_rss_feed(&url).await.unwrap();
-
-            let transformed_channel = transform(response).unwrap();
-
-            if date.is_some() {
-                return filter_feed_items_with(&date.unwrap(), transformed_channel).await;
-            }
-
-            transformed_channel
-        });
+        set.spawn(async move { fetch_rss_feed(&url).await.unwrap() });
     }
 
-    while let Some(task) = set.join_next().await {
-        match task {
-            Ok(feed) => println!("{:#?}", feed),
+    while let Some(task_response) = set.join_next().await {
+        match task_response {
+            Ok(response) => {
+                let transformed_channel = transform_feed_channel(response).unwrap();
+
+                println!(
+                    "{:#?}",
+                    if date.is_some() {
+                        filter_feed_items_with(&date.unwrap(), transformed_channel).await
+                    } else {
+                        transformed_channel
+                    }
+                )
+            }
             Err(e) => eprintln!("{}", e),
         }
     }

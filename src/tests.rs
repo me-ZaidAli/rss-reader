@@ -2,12 +2,12 @@
 
 mod tests {
     use std::time::Duration;
-
     use crate::{
-        fetch_rss_feed, filter_feed_items_with, transform, FeedChannel, FeedItem,
-        FetchRssFeedResponse,
+        fetch_rss_feed, filter_feed_items_with, transform_feed_channel, FeedChannel, FeedItem,
+        RssResponse,
     };
     use chrono::NaiveDate;
+    use reqwest::Url;
     use rss::{ChannelBuilder, Item};
 
     #[tokio::test]
@@ -19,19 +19,18 @@ mod tests {
 
         let feeds = mock_fetch_feeds().await;
 
-        let mut filtered_feed = filter_feed_items_with(
-            &NaiveDate::from_ymd_opt(2020, 12, 30).unwrap(),
-            feeds.clone(),
-        )
-        .await;
+        let mut filtered_feed =
+            filter_feed_items_with(&NaiveDate::from_ymd_opt(2020, 12, 30).unwrap(), feeds).await;
 
         assert!(filtered_feed.items.iter().eq(expected.iter()));
 
         expected = vec![];
 
+        let feeds = mock_fetch_feeds().await;
+
         filtered_feed = filter_feed_items_with(
             &NaiveDate::from_ymd_opt(2023, 12, 30).unwrap(),
-            feeds.clone(),
+            feeds,
         )
         .await;
 
@@ -56,9 +55,11 @@ mod tests {
             },
         ];
 
+        let feeds = mock_fetch_feeds().await;
+
         filtered_feed = filter_feed_items_with(
             &NaiveDate::from_ymd_opt(2010, 12, 30).unwrap(),
-            feeds.clone(),
+            feeds,
         )
         .await;
 
@@ -97,21 +98,21 @@ mod tests {
             .items(feed_items)
             .build();
 
-        let channel_with_time = FetchRssFeedResponse {
+        let channel_with_time = RssResponse {
             channel,
             time_to_fetch: Duration::new(2, 0),
         };
 
-        let actual = transform(channel_with_time).unwrap();
+        let actual = transform_feed_channel(channel_with_time).unwrap();
 
         assert_eq!(expected, actual);
     }
 
     #[tokio::test]
     async fn fetch_feed_from_invalid_url() {
-        let url = "https://www.google.com";
+        let url: Url = Url::parse("https://www.google.com").unwrap();
 
-        assert!(fetch_rss_feed(url).await.is_err());
+        assert!(fetch_rss_feed(&url).await.is_err());
     }
 
     async fn mock_fetch_feeds() -> FeedChannel {
