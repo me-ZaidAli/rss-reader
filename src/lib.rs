@@ -1,11 +1,13 @@
 use anyhow::{Context, Result};
 use chrono::{DateTime, NaiveDate};
 use clap::Parser;
+use log::error;
 use reqwest::Url;
 use rss::{Channel, Item};
-use std::{time::Duration, vec};
+use std::{fs::File, io::Read, path::PathBuf, time::Duration, vec};
 use tokio::{
     io::{self, AsyncBufReadExt},
+    sync::mpsc::UnboundedSender,
     task::JoinSet,
     time::Instant,
 };
@@ -19,7 +21,7 @@ struct FeedItem {
 }
 
 #[derive(Debug, PartialEq)]
-struct FeedChannel {
+pub struct FeedChannel {
     channel_name: String,
     time_to_fetch: Duration,
     items: Vec<FeedItem>,
@@ -29,13 +31,23 @@ struct FeedChannel {
 pub struct Arguments {
     #[arg(short = 'd')]
     pub date: Option<NaiveDate>,
+    #[arg(short = 'f')]
+    pub path: Option<PathBuf>,
 }
 
-async fn read_feed_urls() -> Result<Vec<Url>> {
+async fn read_feed_urls(path: Option<&PathBuf>) -> Result<Vec<Url>> {
     let mut urls: Vec<Url> = vec![];
 
-    let input = io::stdin();
-    let reader = io::BufReader::new(input);
+    let mut buffer = String::new();
+
+    if atty::isnt(atty::Stream::Stdin) {
+        std::io::stdin().read_to_string(&mut buffer)?;
+    } else {
+        File::open(path.unwrap())?.read_to_string(&mut buffer)?;
+    }
+
+    let reader = io::BufReader::new(buffer.as_bytes());
+
     let mut lines = reader.lines();
 
     let _ = lines.next_line().await;
@@ -83,13 +95,19 @@ fn transform_feed_channel(
     }: RssResponse,
 ) -> Result<FeedChannel> {
     let feed_transformer = |item: Item| -> Result<FeedItem> {
-        let pub_date = DateTime::parse_from_rfc2822(&item.pub_date.unwrap())
-            .context("Couldn't parse feed's published date. Rfc2822 date format needed.")?
+        let pub_date = item.pub_date.unwrap();
+        let parsed_pub_date = DateTime::parse_from_rfc2822(&pub_date)
+            .with_context(|| {
+                format!(
+                    "Couldn't parse {:?} publish date. Rfc2822 date format needed.",
+                    pub_date
+                )
+            })?
             .date_naive();
 
         Ok(FeedItem {
             title: item.title.unwrap(),
-            pub_date,
+            pub_date: parsed_pub_date,
         })
     };
 
@@ -123,10 +141,11 @@ async fn filter_feed_items_with(date: &NaiveDate, feed_to_filter: FeedChannel) -
     };
 }
 
-pub async fn run(args: &Arguments) -> Result<()> {
+pub async fn run(args: &Arguments, tx: &UnboundedSender<FeedChannel>) -> Result<()> {
     let date = args.date;
+    let path = args.path.as_ref();
 
-    let feed_urls = read_feed_urls().await?;
+    let feed_urls = read_feed_urls(path).await?;
 
     let mut set: JoinSet<RssResponse> = JoinSet::new();
 
@@ -137,18 +156,24 @@ pub async fn run(args: &Arguments) -> Result<()> {
     while let Some(task_response) = set.join_next().await {
         match task_response {
             Ok(response) => {
-                let transformed_channel = transform_feed_channel(response).unwrap();
+                let transformed_channel = transform_feed_channel(response)
+                    .map_err(|err| error!("Err: {}", err))
+                    .unwrap();
 
-                println!(
-                    "{:#?}",
-                    if date.is_some() {
-                        filter_feed_items_with(&date.unwrap(), transformed_channel).await
-                    } else {
-                        transformed_channel
+                if date.is_some() {
+                    let feed_channel =
+                        filter_feed_items_with(&date.unwrap(), transformed_channel).await;
+
+                    if let Err(_) = tx.send(feed_channel) {
+                        error!("{}", "receiver dropped")
                     }
-                )
+                } else {
+                    if let Err(_) = tx.send(transformed_channel) {
+                        error!("{}", "receiver dropped")
+                    }
+                }
             }
-            Err(e) => eprintln!("{}", e),
+            Err(e) => error!("{}", e),
         }
     }
 
