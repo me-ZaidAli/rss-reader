@@ -141,18 +141,11 @@ async fn filter_feed_items_with(date: &NaiveDate, feed_to_filter: FeedChannel) -
     };
 }
 
-pub async fn run(args: &Arguments, tx: &UnboundedSender<FeedChannel>) -> Result<()> {
-    let date = args.date;
-    let path = args.path.as_ref();
-
-    let feed_urls = read_feed_urls(path).await?;
-
-    let mut set: JoinSet<RssResponse> = JoinSet::new();
-
-    for url in feed_urls {
-        set.spawn(async move { fetch_rss_feed(&url).await.unwrap() });
-    }
-
+async fn process_feeds(
+    set: &mut JoinSet<RssResponse>,
+    tx: &UnboundedSender<FeedChannel>,
+    date: Option<NaiveDate>,
+) {
     while let Some(task_response) = set.join_next().await {
         match task_response {
             Ok(response) => {
@@ -176,6 +169,21 @@ pub async fn run(args: &Arguments, tx: &UnboundedSender<FeedChannel>) -> Result<
             Err(e) => error!("{}", e),
         }
     }
+}
+
+pub async fn run(args: &Arguments, tx: &UnboundedSender<FeedChannel>) -> Result<()> {
+    let date = args.date;
+    let path = args.path.as_ref();
+
+    let feed_urls = read_feed_urls(path).await?;
+
+    let mut set: JoinSet<RssResponse> = JoinSet::new();
+
+    for url in feed_urls {
+        set.spawn(async move { fetch_rss_feed(&url).await.unwrap() });
+    }
+
+    process_feeds(&mut set, tx, date).await;
 
     Ok(())
 }
