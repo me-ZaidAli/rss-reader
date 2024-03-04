@@ -54,9 +54,11 @@ async fn read_feed_urls(path: Option<&PathBuf>) -> Result<Vec<Url>> {
 
     while let Some(line) = lines.next_line().await? {
         if let Some(url) = line.split(',').nth(0) {
-            let parsed_url =
-                Url::parse(url).with_context(|| format!("Couldn't parse the url {}.", url))?;
-            urls.push(parsed_url);
+            if let Ok(parsed_url) = Url::parse(url) {
+                urls.push(parsed_url);
+            } else {
+                error!("Couldn't parse the url {}.", url)
+            }
         }
     }
 

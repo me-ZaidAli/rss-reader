@@ -17,6 +17,6 @@ async fn main() {
     while let Some(feed) = rx.recv().await {
         println!("{:#?}", feed);
     }
-    
+
     rx.close();
 }
