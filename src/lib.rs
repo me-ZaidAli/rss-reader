@@ -72,7 +72,7 @@ struct RssResponse {
 
 async fn fetch_rss_feed(feed_url: &Url) -> Result<RssResponse> {
     let now = Instant::now();
-    let request_data = reqwest::get(feed_url.as_str())
+    let request_data = reqwest::get(feed_url.clone())
         .await
         .with_context(|| format!("Couldn't fetch rss feed from {}", feed_url))?;
 
